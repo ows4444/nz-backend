@@ -1,5 +1,5 @@
-import { FieldSchema } from '../../core/interfaces/schema';
-import { SchemaVersion } from '../value-objects/schema-version.vo';
+import type { FieldSchema } from '../../core/interfaces/schema';
+import type { SchemaVersion } from '../value-objects/schema-version.vo';
 
 export class DynamicSchemaEntity {
   constructor(

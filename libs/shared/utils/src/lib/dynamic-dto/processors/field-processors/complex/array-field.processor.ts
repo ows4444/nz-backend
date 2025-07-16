@@ -1,23 +1,21 @@
 import { forwardRef, Inject, Injectable } from '@nestjs/common';
 import { ArrayMaxSize, ArrayMinSize, IsArray, IsDefined, IsOptional, ValidateNested } from 'class-validator';
-
-import 'reflect-metadata';
-
-import { BaseFieldProcessor } from '../../../core/abstractions/base-field-processor.abstract';
-import { FieldType } from '../../../core/enums';
-import { ArrayFieldSchema, FieldSchema } from '../../../core/interfaces/schema';
-import { FieldProcessorRegistry } from '../field-processor.registry';
+import { BaseFieldProcessor, TransformationFunction } from '../../../core/abstractions/base-field-processor.abstract';
+import { FieldSchema } from '../../../core/interfaces/schema';
+import { FieldProcessorRegistry } from '../../../infrastructure/registries/field-processor.registry';
+import { ArrayFieldSchema } from '../../../core/interfaces/schema/complex/array-field.schema';
+import { FieldType } from '../../../core/types/field.types';
 
 @Injectable()
 export class ArrayFieldProcessor extends BaseFieldProcessor<ArrayFieldSchema> {
-  readonly supportedType = FieldType.ARRAY;
+  readonly supportedType = FieldType.array;
 
   constructor(@Inject(forwardRef(() => FieldProcessorRegistry)) private readonly processorRegistry: FieldProcessorRegistry) {
     super();
   }
 
   canProcess(schema: FieldSchema): schema is ArrayFieldSchema {
-    return schema.type === FieldType.ARRAY;
+    return schema.type === FieldType.array;
   }
 
   generateValidationDecorators(schema: ArrayFieldSchema, isRequired: boolean): PropertyDecorator[] {
@@ -42,11 +40,11 @@ export class ArrayFieldProcessor extends BaseFieldProcessor<ArrayFieldSchema> {
     }
 
     // Item validation
-    if (!Array.isArray(schema.items) && schema.items.type === FieldType.OBJECT) {
+    if (!Array.isArray(schema.items) && schema.items.type === FieldType.object) {
       decorators.push(ValidateNested({ each: true }));
     } else if (!Array.isArray(schema.items)) {
       const itemProcessor = this.processorRegistry.getProcessor(schema.items.type);
-      const itemDecorators = itemProcessor.generateValidationDecorators(schema.items, true, true);
+      const itemDecorators = itemProcessor.generateValidationDecorators(schema.items, true);
       // Apply each: true to item decorators
       decorators.push(...itemDecorators); //.map((decorator) => this.makeEachDecorator(decorator)));
     }
@@ -59,18 +57,59 @@ export class ArrayFieldProcessor extends BaseFieldProcessor<ArrayFieldSchema> {
     return decorators;
   }
 
-  generateTransformationDecorators(schema: ArrayFieldSchema): PropertyDecorator[] {
-    const decorators: PropertyDecorator[] = [];
+  protected getTypeSpecificTransformations(schema: ArrayFieldSchema): TransformationFunction[] {
+    const functions: TransformationFunction[] = [];
 
-    if (schema.default !== undefined) {
-      decorators.push(this.createDefaultValueTransform(schema));
-    }
-    // Nested object transformation
-    if (!Array.isArray(schema.items) && schema.items.type === FieldType.OBJECT) {
-      // This would need to be implemented with nested class generation
-      // For now, we'll skip this complex case
+    // Array coercion (order: 30)
+    functions.push({
+      order: 30,
+      name: 'array_coercion',
+      transform: ({ value }) => {
+        if (Array.isArray(value)) return value;
+
+        // Convert single values to arrays if not already an array
+        if (value !== undefined && value !== null) {
+          return [value];
+        }
+
+        return value;
+      },
+    });
+
+    // Array processing (order: 40)
+    functions.push({
+      order: 40,
+      name: 'array_processing',
+      transform: ({ value }) => {
+        if (!Array.isArray(value)) return value;
+
+        let result = [...value];
+
+        // Remove duplicates if configured
+        if (schema.uniqueItems) {
+          result = [...new Set(result)];
+        }
+
+        return result;
+      },
+      condition: (_, { value }) => Array.isArray(value),
+    });
+
+    // Basic item validation for complex items (order: 50)
+    if (!Array.isArray(schema.items) && schema.items.type === FieldType.object) {
+      functions.push({
+        order: 50,
+        name: 'item_validation',
+        transform: ({ value }) => {
+          if (!Array.isArray(value)) return value;
+
+          // Basic validation that items are objects
+          return value.filter((item) => item && typeof item === 'object');
+        },
+        condition: (_, { value }) => Array.isArray(value),
+      });
     }
 
-    return decorators;
+    return functions;
   }
 }

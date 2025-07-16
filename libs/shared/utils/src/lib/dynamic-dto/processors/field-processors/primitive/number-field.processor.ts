@@ -1,16 +1,16 @@
 import { Injectable } from '@nestjs/common';
-import { Transform } from 'class-transformer';
 import { IsDefined, IsNumber, IsOptional, Max, Min } from 'class-validator';
-import { BaseFieldProcessor } from '../../../core/abstractions/base-field-processor.abstract';
-import { FieldType } from '../../../core/enums';
-import { FieldSchema, NumberFieldSchema } from '../../../core/interfaces/schema';
+import { BaseFieldProcessor, TransformationFunction } from '../../../core/abstractions/base-field-processor.abstract';
+import type { FieldSchema } from '../../../core/interfaces/schema';
+import { FieldType } from '../../../core/types/field.types';
+import type { NumberFieldSchema } from '../../../core/interfaces/schema/primitive/number-field.schema';
 
 @Injectable()
 export class NumberFieldProcessor extends BaseFieldProcessor<NumberFieldSchema> {
-  readonly supportedType = FieldType.NUMBER;
+  readonly supportedType = FieldType.number;
 
   canProcess(schema: FieldSchema): schema is NumberFieldSchema {
-    return schema.type === FieldType.NUMBER;
+    return schema.type === FieldType.number;
   }
 
   generateValidationDecorators(schema: NumberFieldSchema, isRequired: boolean, parentIsArray: boolean): PropertyDecorator[] {
@@ -34,24 +34,76 @@ export class NumberFieldProcessor extends BaseFieldProcessor<NumberFieldSchema> 
     return decorators;
   }
 
-  generateTransformationDecorators(schema: NumberFieldSchema): PropertyDecorator[] {
-    const decorators: PropertyDecorator[] = [];
+  protected getTypeSpecificTransformations(schema: NumberFieldSchema): TransformationFunction[] {
+    const functions: TransformationFunction[] = [];
 
-    // Type coercion
-    decorators.push(
-      Transform(({ value }): any => {
+    // Type coercion transformation (order: 30)
+    functions.push({
+      order: 30,
+      name: 'type_coercion',
+      transform: ({ value }) => {
+        if (value === null || value === undefined) return value;
+
         if (typeof value === 'string') {
-          const num = Number(value);
+          const trimmed = value.trim();
+          if (trimmed === '') return value;
+
+          const num = Number(trimmed);
           return isNaN(num) ? value : num;
         }
-        return value;
-      }),
-    );
 
-    if (schema.default !== undefined) {
-      decorators.push(this.createDefaultValueTransform(schema));
+        if (typeof value === 'boolean') {
+          return value ? 1 : 0;
+        }
+
+        return value;
+      },
+    });
+
+    // Precision and rounding (order: 40)
+    if (schema.precision !== undefined || schema.scale !== undefined) {
+      functions.push({
+        order: 40,
+        name: 'precision_rounding',
+        transform: ({ value }) => {
+          if (typeof value !== 'number') return value;
+
+          if (schema.scale !== undefined) {
+            return Math.round(value * Math.pow(10, schema.scale)) / Math.pow(10, schema.scale);
+          }
+
+          if (schema.precision !== undefined) {
+            return Number(value.toPrecision(schema.precision));
+          }
+
+          return value;
+        },
+        condition: (_, { value }) => typeof value === 'number',
+      });
     }
 
-    return decorators;
+    // Range clamping (order: 50)
+    if (schema.clamp && (schema.min !== undefined || schema.max !== undefined)) {
+      functions.push({
+        order: 50,
+        name: 'range_clamping',
+        transform: ({ value }) => {
+          if (typeof value !== 'number') return value;
+
+          let result = value;
+          if (schema.min !== undefined && result < schema.min) {
+            result = schema.min;
+          }
+          if (schema.max !== undefined && result > schema.max) {
+            result = schema.max;
+          }
+
+          return result;
+        },
+        condition: (_, { value }) => typeof value === 'number',
+      });
+    }
+
+    return functions;
   }
 }
